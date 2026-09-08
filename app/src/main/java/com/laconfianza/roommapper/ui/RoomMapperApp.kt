@@ -26,7 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
@@ -307,7 +307,7 @@ private fun OverviewScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
             Spacer(Modifier.width(8.dp))
             Text("Start guided scan", fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            Icon(Icons.Outlined.ArrowForward, contentDescription = null)
+            Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null)
         }
         Text(
             "Tip: hold your phone upright at the same height you normally use it.",
