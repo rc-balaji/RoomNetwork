@@ -11,6 +11,8 @@ Room Mapper is designed to be useful without an account or cloud sync.
 
 This information is kept in the app's private storage and is removed when the user clears history or uninstalls the app. The app does not collect precise location trails or upload room maps.
 
+When Live AR is selected, camera frames are consumed locally by ARCore for motion tracking, feature-point mapping, and surface hit-tests. Room Mapper does not save camera frames, send them to a server, or use the camera outside the live AR screen.
+
 ## Network requests
 
 During a verification, the app contacts a small latency endpoint and a bounded download/upload endpoint over HTTPS. The requests are used to calculate the on-device result and are not tied to an account by this app. The exact carrier route is shown only when Android exposes an active data subscription.
@@ -18,6 +20,7 @@ During a verification, the app contacts a small latency endpoint and a bounded d
 ## Permissions
 
 Phone state and location access are optional for map testing but help Android expose cell signal metrics. If the user declines them, the app keeps working with route and performance measurements and labels unavailable fields instead of guessing.
+Camera access is requested only for Live AR. If it is declined, guided pins remain available.
 
 ## User controls
 

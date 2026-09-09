@@ -1,8 +1,15 @@
 package com.laconfianza.roommapper.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +17,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -64,6 +72,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -78,16 +87,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.laconfianza.roommapper.model.AppTab
 import com.laconfianza.roommapper.model.Carrier
 import com.laconfianza.roommapper.model.Room
@@ -97,11 +113,15 @@ import com.laconfianza.roommapper.model.Spot
 import com.laconfianza.roommapper.model.TestResult
 import com.laconfianza.roommapper.model.UseProfile
 import com.laconfianza.roommapper.viewmodel.RoomMapperViewModel
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RoomMapperApp(viewModel: RoomMapperViewModel = viewModel()) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val immersiveAr = state.selectedTab == AppTab.SCAN &&
+        state.selectedMode == ScanMode.AUTO &&
+        state.arAvailable
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
@@ -114,9 +134,11 @@ fun RoomMapperApp(viewModel: RoomMapperViewModel = viewModel()) {
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            Column {
-                AppHeader(onRefresh = viewModel::refreshEnvironment)
-                AppNavigation(state.selectedTab, viewModel::selectTab)
+            if (!immersiveAr) {
+                Column {
+                    AppHeader(onRefresh = viewModel::refreshEnvironment)
+                    AppNavigation(state.selectedTab, viewModel::selectTab)
+                }
             }
         }
     ) { padding ->
@@ -125,7 +147,7 @@ fun RoomMapperApp(viewModel: RoomMapperViewModel = viewModel()) {
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (!state.requiredPermissionsGranted) {
+            if (!state.requiredPermissionsGranted && !immersiveAr) {
                 PermissionBanner {
                     permissionLauncher.launch(
                         arrayOf(
@@ -136,7 +158,7 @@ fun RoomMapperApp(viewModel: RoomMapperViewModel = viewModel()) {
                     )
                 }
             }
-            if (!state.network.validated && state.selectedTab != AppTab.SETTINGS) {
+            if (!state.network.validated && state.selectedTab != AppTab.SETTINGS && !immersiveAr) {
                 NetworkNotice()
             }
             Box(modifier = Modifier.weight(1f)) {
@@ -299,13 +321,16 @@ private fun OverviewScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
         }
         BestSpotCard(state.bestSpot)
         Button(
-            onClick = { viewModel.selectTab(AppTab.SCAN) },
+            onClick = {
+                viewModel.selectTab(AppTab.SCAN)
+                if (state.arAvailable) viewModel.selectMode(ScanMode.AUTO)
+            },
             modifier = Modifier.fillMaxWidth().height(54.dp),
             shape = RoundedCornerShape(16.dp)
         ) {
             Icon(Icons.Outlined.PlayArrow, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("Start guided scan", fontWeight = FontWeight.Bold)
+            Text(if (state.arAvailable) "Open live AR scan" else "Start guided scan", fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
             Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null)
         }
@@ -578,6 +603,10 @@ private fun BestSpotCard(spot: Spot?) {
 
 @Composable
 private fun ScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
+    if (state.selectedMode == ScanMode.AUTO && state.arAvailable) {
+        ArScanScreen(state, viewModel)
+        return
+    }
     var showCustomBudget by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
@@ -605,7 +634,7 @@ private fun ScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
                 )
             }
         }
-        SelectorSection("Mapping mode", "Guided mode works on every supported Android phone") {
+        SelectorSection("Mapping mode", "Guided placement or live AR spatial mapping") {
             FilterChip(
                 selected = state.selectedMode == ScanMode.GUIDED,
                 onClick = { viewModel.selectMode(ScanMode.GUIDED) },
@@ -615,7 +644,7 @@ private fun ScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
                 selected = state.selectedMode == ScanMode.AUTO,
                 enabled = state.arAvailable,
                 onClick = { viewModel.selectMode(ScanMode.AUTO) },
-                label = { Text(if (state.arAvailable) "Auto map assist" else "Auto map unavailable") }
+                label = { Text(if (state.arAvailable) "Live AR scan" else "Live AR unavailable") }
             )
         }
         SelectorSection("Data budget", "One scan stays within your selected cap") {
@@ -680,6 +709,375 @@ private fun ScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
             onDismiss = { showCustomBudget = false },
             onApply = { mb -> viewModel.selectBudget(mb) }
         )
+    }
+}
+
+@Composable
+private fun ArScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var cameraGranted by remember(context) {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var frameState by remember { mutableStateOf(ArFrameState()) }
+    var lastPlacement by remember { mutableStateOf<ArNodePlacement?>(null) }
+
+    val arView = remember(context) {
+        ArCoreLiveScanView(
+            context = context,
+            onFrameState = { frameState = it },
+            onNodePlaced = { placement ->
+                lastPlacement = placement
+                viewModel.markSpot(placement.normalizedX, placement.normalizedY)
+            }
+        )
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraGranted = granted
+        if (granted) arView.resumeSession()
+    }
+
+    DisposableEffect(lifecycleOwner, arView) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> {
+                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        arView.resumeSession()
+                    }
+                }
+                Lifecycle.Event.ON_PAUSE -> arView.pauseSession()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            arView.closeSession()
+        }
+    }
+
+    LaunchedEffect(cameraGranted) {
+        if (cameraGranted) arView.resumeSession()
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            viewModel.refreshEnvironment()
+            delay(1_000L)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        AndroidView(
+            factory = { arView },
+            modifier = Modifier.fillMaxSize()
+        )
+        ArSpatialHud(
+            frameState = frameState,
+            state = state,
+            onExit = { viewModel.selectMode(ScanMode.GUIDED) }
+        )
+
+        if (!cameraGranted) {
+            ArPermissionPanel(onRequest = { cameraLauncher.launch(Manifest.permission.CAMERA) })
+        } else if (frameState.errorMessage != null) {
+            ArRuntimePanel(
+                message = frameState.errorMessage ?: "AR session unavailable",
+                onGuided = { viewModel.selectMode(ScanMode.GUIDED) }
+            )
+        }
+
+        ArBottomConsole(
+            state = state,
+            frameState = frameState,
+            hasPlacement = lastPlacement != null,
+            onVerify = viewModel::startVerification,
+            onStop = viewModel::cancelScan,
+            onGuided = { viewModel.selectMode(ScanMode.GUIDED) }
+        )
+    }
+}
+
+@Composable
+private fun ArSpatialHud(frameState: ArFrameState, state: ScanUiState, onExit: () -> Unit) {
+    val pulseTransition = rememberInfiniteTransition(label = "ar-pulse")
+    val pulse by pulseTransition.animateFloat(
+        initialValue = 0.78f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1_400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "ar-reticle-pulse"
+    )
+    val cyan = Color(0xFF63E8FF)
+    val violet = Color(0xFFC9A7FF)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = Offset(size.width / 2f, size.height * .46f)
+            val ring = 42f * pulse
+            drawCircle(cyan.copy(alpha = .10f), radius = ring * 2.15f, center = center)
+            drawCircle(cyan.copy(alpha = .78f), radius = ring, center = center, style = Stroke(width = 2.2f))
+            drawCircle(violet.copy(alpha = .34f), radius = ring * 1.36f, center = center, style = Stroke(width = 1.2f))
+            drawLine(cyan.copy(alpha = .9f), Offset(center.x - ring - 18f, center.y), Offset(center.x - ring + 4f, center.y), strokeWidth = 2f)
+            drawLine(cyan.copy(alpha = .9f), Offset(center.x + ring - 4f, center.y), Offset(center.x + ring + 18f, center.y), strokeWidth = 2f)
+            drawLine(cyan.copy(alpha = .9f), Offset(center.x, center.y - ring - 18f), Offset(center.x, center.y - ring + 4f), strokeWidth = 2f)
+            drawLine(cyan.copy(alpha = .9f), Offset(center.x, center.y + ring - 4f), Offset(center.x, center.y + ring + 18f), strokeWidth = 2f)
+
+            // A subtle perspective grid makes the spatial scan feel alive while
+            // the ARCore feature cloud is being built behind the HUD.
+            val horizon = size.height * .68f
+            repeat(7) { index ->
+                val x = size.width * (index / 6f)
+                drawLine(violet.copy(alpha = .10f), Offset(size.width / 2f, horizon), Offset(x, size.height), strokeWidth = 1f)
+            }
+            repeat(5) { index ->
+                val t = index / 4f
+                val y = horizon + (size.height - horizon) * (t * t)
+                drawLine(violet.copy(alpha = .12f), Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(14.dp),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xCC08131D))
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onExit, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Outlined.Stop, contentDescription = "Exit live AR", tint = Color(0xFFBFD9E8), modifier = Modifier.size(17.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(if (frameState.trackingReady) cyan else Color(0xFFFFC857))
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text(
+                        "ROOM MAPPER  /  LIVE AR",
+                        color = cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.4.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        frameState.trackingLabel,
+                        color = if (frameState.trackingReady) Color(0xFF8BFFCB) else Color(0xFFFFC857),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    frameState.phaseLabel,
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = .5.sp
+                )
+                Spacer(Modifier.height(11.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ArMetricPill("RADIO", state.signal?.radioLabel ?: "—", cyan)
+                    ArMetricPill("QUALITY", "${frameState.qualityPercent}%", violet)
+                    ArMetricPill("PATH", "${formatMeters(frameState.pathMeters)} m", Color(0xFF8BFFCB))
+                }
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(start = 14.dp, top = 154.dp),
+            shape = RoundedCornerShape(15.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xAA08131D))
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                Text("SIGNAL VECTOR", color = Color(0xFF8BFFCB), fontSize = 9.sp, letterSpacing = 1.1.sp)
+                Text(state.signal?.strengthLabel ?: "Warming up", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(state.network.transport, color = Color(0xFFB6C8D2), fontSize = 10.sp)
+            }
+        }
+
+        Card(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(end = 14.dp, top = 154.dp),
+            shape = RoundedCornerShape(15.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xAA08131D))
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text("SPATIAL NODES", color = violet, fontSize = 9.sp, letterSpacing = 1.1.sp)
+                Text("${frameState.nodeCount.toString().padStart(2, '0')}", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text("${formatMeters(frameState.distanceFromOriginMeters)} m origin", color = Color(0xFFB6C8D2), fontSize = 10.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArMetricPill(label: String, value: String, color: Color) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = .11f))
+            .padding(horizontal = 10.dp, vertical = 7.dp)
+    ) {
+        Text(label, color = color.copy(alpha = .8f), fontSize = 8.sp, letterSpacing = .9.sp)
+        Text(value, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun BoxScope.ArBottomConsole(
+    state: ScanUiState,
+    frameState: ArFrameState,
+    hasPlacement: Boolean,
+    onVerify: () -> Unit,
+    onStop: () -> Unit,
+    onGuided: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(14.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xE6091620))
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        when {
+                            state.isScanning -> "LIVE PERFORMANCE CAPTURE"
+                            frameState.trackingReady && hasPlacement -> "NODE LOCKED • READY TO VERIFY"
+                            frameState.trackingReady -> "TAP A SURFACE TO DROP A SCAN NODE"
+                            else -> "MOVE SLOWLY TO LOCK THE ROOM"
+                        },
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = .65.sp
+                    )
+                    Text(
+                        when {
+                            state.isScanning -> state.scanStatus
+                            frameState.trackingReady -> "Each node records radio, latency, speed, and route context."
+                            else -> "Keep the phone upright and point at textured surfaces."
+                        },
+                        color = Color(0xFFB6C8D2),
+                        fontSize = 11.sp
+                    )
+                }
+                if (state.isScanning) {
+                    Text("${(state.scanProgress * 100).toInt().coerceIn(0, 100)}%", color = Color(0xFF63E8FF), fontWeight = FontWeight.Bold)
+                }
+            }
+            if (state.isScanning) {
+                LinearProgressIndicator(
+                    progress = { state.scanProgress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF63E8FF),
+                    trackColor = Color(0xFF24404E)
+                )
+                OutlinedButton(
+                    onClick = onStop,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Outlined.Stop, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Pause safely")
+                }
+            } else {
+                Button(
+                    onClick = onVerify,
+                    enabled = frameState.trackingReady && hasPlacement && state.selectedSpot != null,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Outlined.Bolt, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Verify ${state.selectedSpot?.name ?: "node"}", fontWeight = FontWeight.Bold)
+                }
+            }
+            TextButton(onClick = onGuided, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Switch to guided pins", color = Color(0xFFBFD9E8), fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.ArPermissionPanel(onRequest: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .padding(28.dp),
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF20B1C29))
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("LIVE AR NEEDS CAMERA ACCESS", color = Color(0xFF63E8FF), fontWeight = FontWeight.Bold, letterSpacing = 1.sp, textAlign = TextAlign.Center)
+            Text(
+                "Room Mapper uses the camera only to track your movement and place spatial scan nodes. The radio results remain on this phone.",
+                color = Color(0xFFDBEAF2),
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center
+            )
+            Button(onClick = onRequest, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(16.dp)) {
+                Text("Enable live camera")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.ArRuntimePanel(message: String, onGuided: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .align(Alignment.Center)
+            .padding(28.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF20B1C29))
+    ) {
+        Column(
+            modifier = Modifier.padding(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("AR SESSION PAUSED", color = Color(0xFFFFC857), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            Text(message, color = Color(0xFFDBEAF2), fontSize = 13.sp, textAlign = TextAlign.Center)
+            OutlinedButton(onClick = onGuided, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(15.dp)) {
+                Text("Use guided pins instead")
+            }
+        }
     }
 }
 
@@ -875,16 +1273,16 @@ private fun SettingsScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
         SettingsCard(Icons.Outlined.Map, "Mapping mode") {
             Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = state.selectedMode == ScanMode.GUIDED, onClick = { viewModel.selectMode(ScanMode.GUIDED) }, label = { Text("Guided") })
-                FilterChip(selected = state.selectedMode == ScanMode.AUTO, enabled = state.arAvailable, onClick = { viewModel.selectMode(ScanMode.AUTO) }, label = { Text("Auto assist") })
+                FilterChip(selected = state.selectedMode == ScanMode.AUTO, enabled = state.arAvailable, onClick = { viewModel.selectMode(ScanMode.AUTO) }, label = { Text("Live AR") })
             }
             Text(
-                if (state.arAvailable) "ARCore is available on this phone; guided pins remain the reliable fallback." else "ARCore is not available; guided pins work without special hardware.",
+                if (state.arAvailable) "ARCore live spatial mapping is available; guided pins remain the reliable fallback." else "ARCore is not available; guided pins work without special hardware.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         SettingsCard(Icons.Outlined.Info, "About Room Mapper") {
-            Text("Version 1.0.0", fontWeight = FontWeight.SemiBold)
+            Text("Version 1.1.0", fontWeight = FontWeight.SemiBold)
             Text("Designed for quick, honest room-level comparisons across Jio, Airtel, and other mobile routes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text(
@@ -978,3 +1376,6 @@ private fun scoreColor(score: Int, error: String?): Color = when {
 }
 
 private fun formatDecimal(value: Double): String = if (value >= 10) "%.0f".format(value) else "%.1f".format(value)
+
+private fun formatMeters(value: Float): String =
+    if (value < 10f) "%.1f".format(value) else "%.0f".format(value)

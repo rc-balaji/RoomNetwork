@@ -2,6 +2,7 @@
 
 - [ ] GitHub Actions is green for tests, lint, and `assembleDebug`.
 - [ ] The APK was installed on each supported Android version and phone model.
+- [ ] Live AR was tested on each supported ARCore phone: camera permission, tracking lock, point cloud, surface node placement, path/origin revisit, tracking-loss recovery, and guided fallback.
 - [ ] Jio, Airtel, dual-SIM, Wi-Fi-off, offline, permission-denied, and cancellation cases were exercised.
 - [ ] Real measured values were checked against a second trusted speed test; score weights were reviewed.
 - [ ] Privacy copy, data-budget copy, and endpoint ownership have been reviewed for the intended launch market.

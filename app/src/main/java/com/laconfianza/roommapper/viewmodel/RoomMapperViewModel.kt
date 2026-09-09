@@ -107,7 +107,13 @@ class RoomMapperViewModel(application: Application) : AndroidViewModel(applicati
                     signal = signal,
                     network = network,
                     requiredPermissionsGranted = signalReader.hasPermissions(),
-                    scanStatus = if (network.validated) "Ready to scan" else "Mobile internet not verified"
+                    scanStatus = if (it.isScanning) {
+                        it.scanStatus
+                    } else if (network.validated) {
+                        "Ready to scan"
+                    } else {
+                        "Mobile internet not verified"
+                    }
                 )
             }
         }
