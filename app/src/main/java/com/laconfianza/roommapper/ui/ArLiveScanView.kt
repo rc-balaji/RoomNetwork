@@ -61,6 +61,8 @@ class ArCoreLiveScanView(
     onFrameState: (ArFrameState) -> Unit,
     onNodePlaced: (ArNodePlacement) -> Unit
 ) : GLSurfaceView(context) {
+    private var closed = false
+    private var touchLocation: Pair<Float, Float>? = null
     private val renderer = ArCoreRenderer(
         context = context,
         onFrameState = onFrameState,
@@ -73,27 +75,45 @@ class ArCoreLiveScanView(
         renderMode = RENDERMODE_CONTINUOUSLY
         isFocusable = true
         isFocusableInTouchMode = true
+        isClickable = true
+        contentDescription = "Live AR camera. Tap a detected surface to place a scan node."
     }
 
     fun resumeSession() {
-        onResume()
-        renderer.resumeSession()
+        if (!closed && renderer.resumeSession()) onResume()
     }
 
     fun pauseSession() {
-        renderer.pauseSession()
+        if (closed) return
+        // Wait for the GL thread before pausing the session it reads.
         onPause()
+        renderer.pauseSession()
     }
 
     fun closeSession() {
-        renderer.closeSession()
+        if (closed) return
+        closed = true
         onPause()
+        renderer.closeSession()
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_UP) {
-            renderer.queueTap(event.x, event.y, width, height)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_UP -> {
+                touchLocation = event.x to event.y
+                performClick()
+            }
+            MotionEvent.ACTION_CANCEL -> touchLocation = null
         }
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        val location = touchLocation
+        touchLocation = null
+        // Accessibility activation places at the centre of the camera view.
+        if (!closed) renderer.queueTap(location?.first ?: width / 2f, location?.second ?: height / 2f, width, height)
         return true
     }
 }
@@ -109,6 +129,8 @@ private class ArCoreRenderer(
 
     @Volatile private var session: Session? = null
     @Volatile private var sessionRunning = false
+    @Volatile private var closed = false
+    private var installRequested = false
     private var cameraTextureId = 0
     private var cameraProgram = 0
     private var pointProgram = 0
@@ -152,22 +174,24 @@ private class ArCoreRenderer(
         ndcQuadBuffer.put(ndcQuad).position(0)
     }
 
-    fun resumeSession() {
-        if (sessionRunning) return
+    fun resumeSession(): Boolean {
+        if (closed) return false
+        if (sessionRunning) return true
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             reportError("Camera permission is required for live AR")
-            return
+            return false
         }
         val activity = context.findActivity()
         if (activity == null) {
             reportError("AR needs a foreground activity")
-            return
+            return false
         }
         try {
-            val installStatus = ArCoreApk.getInstance().requestInstall(activity, true)
+            val installStatus = ArCoreApk.getInstance().requestInstall(activity, !installRequested)
             if (installStatus == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+                installRequested = true
                 reportState(ArFrameState(phaseLabel = "INSTALLING AR RUNTIME", errorMessage = "Finish the ARCore setup, then return to Room Mapper"))
-                return
+                return false
             }
             if (session == null) {
                 session = Session(context).also { configure(it) }
@@ -183,32 +207,45 @@ private class ArCoreRenderer(
             session?.resume()
             sessionRunning = true
             reportState(ArFrameState(phaseLabel = "LOOK AROUND TO INITIALISE", errorMessage = null))
+            return true
         } catch (error: Exception) {
             sessionRunning = false
             reportError(error.message ?: "ARCore could not start on this device")
+            return false
         }
     }
 
     fun pauseSession() {
+        val wasRunning = sessionRunning
         sessionRunning = false
-        runCatching { session?.pause() }
+        if (wasRunning) runCatching { session?.pause() }
+        pendingTap.set(null)
+        lastPose = null
     }
 
     fun closeSession() {
-        sessionRunning = false
+        if (closed) return
+        pauseSession()
+        closed = true
+        mainHandler.removeCallbacksAndMessages(null)
+        // Anchor owns no close() API. detach() releases its tracking work.
         anchors.forEach { anchor ->
             runCatching { anchor.detach() }
-            runCatching { anchor.close() }
         }
         anchors.clear()
-        runCatching { session?.close() }
+        val sessionToClose = session
         session = null
         textureBoundToSession = false
         displayGeometrySet = false
+        // Session.close() can take seconds; the GL thread is stopped and no
+        // callbacks can escape, so native cleanup can happen off the UI thread.
+        if (sessionToClose != null) {
+            Thread({ runCatching { sessionToClose.close() } }, "RoomMapper-ArClose").start()
+        }
     }
 
     fun queueTap(x: Float, y: Float, width: Int, height: Int) {
-        if (width <= 0 || height <= 0) return
+        if (closed || !sessionRunning || width <= 0 || height <= 0) return
         pendingTap.set(
             Tap(
                 x = x,
@@ -243,8 +280,8 @@ private class ArCoreRenderer(
         surfaceWidth = width.coerceAtLeast(1)
         surfaceHeight = height.coerceAtLeast(1)
         GLES20.glViewport(0, 0, surfaceWidth, surfaceHeight)
-        session?.setDisplayGeometry(displayRotation(), surfaceWidth, surfaceHeight)
-        displayGeometrySet = session != null
+        // Apply geometry in onDrawFrame only while the session is running.
+        displayGeometrySet = false
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -284,6 +321,10 @@ private class ArCoreRenderer(
                     // frames. Keep the camera and existing anchors responsive.
                 }
                 drawAnchors(camera)
+            } else {
+                lastPose = null
+                pendingTap.set(null)
+                pointCount = 0
             }
             reportTelemetry(trackingState)
         } catch (error: Exception) {
@@ -393,10 +434,9 @@ private class ArCoreRenderer(
         while (anchors.size > MAX_ANCHOR_COUNT) {
             val expired = anchors.removeAt(0)
             runCatching { expired.detach() }
-            runCatching { expired.close() }
         }
         mainHandler.post {
-            onNodePlaced(ArNodePlacement(tap.normalizedX, tap.normalizedY))
+            if (!closed && sessionRunning) onNodePlaced(ArNodePlacement(tap.normalizedX, tap.normalizedY))
         }
     }
 
@@ -466,7 +506,7 @@ private class ArCoreRenderer(
     }
 
     private fun reportState(state: ArFrameState) {
-        mainHandler.post { onFrameState(state) }
+        if (!closed) mainHandler.post { if (!closed) onFrameState(state) }
     }
 
     @Suppress("DEPRECATION")

@@ -120,10 +120,7 @@ class RoomMapperViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun checkArSupport() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val available = runCatching {
-                ArCoreApk.getInstance().checkAvailability(getApplication<Application>()).isSupported
-            }.getOrDefault(false)
+        fun updateAvailability(available: Boolean) {
             _uiState.update {
                 it.copy(
                     arAvailable = available,
@@ -131,6 +128,13 @@ class RoomMapperViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
         }
+        // The synchronous check can return UNKNOWN_CHECKING on a supported
+        // phone. Wait for the real result before disabling the AR entry point.
+        runCatching {
+            ArCoreApk.getInstance().checkAvailabilityAsync(getApplication<Application>()) { availability ->
+                updateAvailability(availability.isSupported)
+            }
+        }.onFailure { updateAvailability(false) }
     }
 
     fun startVerification() {

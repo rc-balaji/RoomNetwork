@@ -39,7 +39,22 @@ jobs:
           gradle-version: '8.13'
 
       - name: Run unit tests, lint, and build debug APK
-        run: gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --continue --console=plain :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace 2>&1 | tee build.log
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoomNetworkMapper-build-diagnostics
+          path: |
+            build.log
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4

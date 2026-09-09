@@ -104,6 +104,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.repeatOnLifecycle
 import com.laconfianza.roommapper.model.AppTab
 import com.laconfianza.roommapper.model.Carrier
 import com.laconfianza.roommapper.model.Room
@@ -739,16 +740,14 @@ private fun ArScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         cameraGranted = granted
-        if (granted) arView.resumeSession()
     }
 
     DisposableEffect(lifecycleOwner, arView) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> {
-                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        arView.resumeSession()
-                    }
+                    cameraGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                    if (cameraGranted) arView.resumeSession()
                 }
                 Lifecycle.Event.ON_PAUSE -> arView.pauseSession()
                 else -> Unit
@@ -761,14 +760,18 @@ private fun ArScanScreen(state: ScanUiState, viewModel: RoomMapperViewModel) {
         }
     }
 
-    LaunchedEffect(cameraGranted) {
-        if (cameraGranted) arView.resumeSession()
+    LaunchedEffect(cameraGranted, lifecycleOwner, arView) {
+        if (cameraGranted && lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            arView.resumeSession()
+        }
     }
 
-    LaunchedEffect(Unit) {
-        while (true) {
-            viewModel.refreshEnvironment()
-            delay(1_000L)
+    LaunchedEffect(lifecycleOwner, viewModel) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) {
+                viewModel.refreshEnvironment()
+                delay(1_000L)
+            }
         }
     }
 
